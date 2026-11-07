@@ -5,9 +5,7 @@ import unicodedata
 from pathlib import Path
 from collections import defaultdict
 
-import chromadb
 from rank_bm25 import BM25Okapi
-from sentence_transformers import SentenceTransformer
 
 
 # --------------------------------
@@ -20,15 +18,11 @@ QURAN_FILE = (
     BASE_DIR / "data" / "processed" / "quran_bilingual.jsonl"
 )
 
-CHROMA_DIR = BASE_DIR / "data" / "chroma_db"
-
-MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
-
 RETRIEVAL_LIMIT = 30
 FINAL_RESULTS = 8
 RRF_K = 60
 
-# Additional score for a verse with direct lexical evidence.
+# Additional score for verses with direct lexical evidence.
 EVIDENCE_BOOST = 0.05
 
 
@@ -74,7 +68,6 @@ TOPIC_EXPANSIONS = {
             "حَسْبُنَا اللَّهُ"
         ],
 
-        # Direct wording used to identify relevant verses.
         "evidence": {
             "arabic": [
                 "توكل"
@@ -165,7 +158,7 @@ def tokenize(text):
 
 
 # --------------------------------
-# 6. QUERY EXPANSION
+# 6. TOPIC DETECTION
 # --------------------------------
 
 def detect_topic(question):
@@ -187,6 +180,10 @@ def detect_topic(question):
     return None
 
 
+# --------------------------------
+# 7. QUERY EXPANSION
+# --------------------------------
+
 def expand_query(question):
 
     variants = [question]
@@ -195,7 +192,9 @@ def expand_query(question):
 
     if topic:
 
-        print(f"Query expansion activated for: {topic}")
+        print(
+            f"Query expansion activated for: {topic}"
+        )
 
         variants.extend(
             TOPIC_EXPANSIONS[topic]["queries"]
@@ -206,7 +205,7 @@ def expand_query(question):
 
 
 # --------------------------------
-# 7. EVIDENCE MATCHING
+# 8. DIRECT EVIDENCE MATCHING
 # --------------------------------
 
 def find_evidence_matches(record, topic):
@@ -264,7 +263,7 @@ def find_evidence_matches(record, topic):
 
 
 # --------------------------------
-# 8. QURAN RETRIEVER
+# 9. QURAN RETRIEVER
 # --------------------------------
 
 class QuranRetriever:
@@ -295,10 +294,17 @@ class QuranRetriever:
                         json.loads(line)
                     )
 
+        if not self.records:
+
+            raise ValueError(
+                "Quran dataset is empty."
+            )
+
         print(
             f"Loaded {len(self.records)} Quran verses."
         )
 
+        # Map each verse to its Surah and Ayah ID.
         self.record_by_id = {
 
             f"{record['surah_number']}:{record['ayah_number']}":
@@ -325,82 +331,8 @@ class QuranRetriever:
 
         print("BM25 index ready!")
 
-        # Load embedding model.
-        print("Loading embedding model...")
+        print("QurAyah AI retriever is ready!")
 
-        self.model = SentenceTransformer(MODEL_NAME)
-
-        print("Embedding model loaded!")
-
-        # Connect to ChromaDB.
-        print("Connecting to ChromaDB...")
-
-        self.client = chromadb.PersistentClient(
-            path=str(CHROMA_DIR)
-        )
-
-        self.collection = self.client.get_collection(
-            name="quran_verses"
-        )
-
-        indexed_count = self.collection.count()
-
-        print(
-            "ChromaDB connected. Indexed verses:",
-            indexed_count
-        )
-
-        if indexed_count != len(self.records):
-
-            raise ValueError(
-                "Quran dataset and ChromaDB counts do not match. "
-                "Please rebuild the index."
-            )
-
-        print("Hikmah AI retriever is ready!")
-
-    # --------------------------------
-    # 9. SEMANTIC SEARCH
-    # --------------------------------
-
-    def semantic_search(self, query):
-
-        query_embedding = self.model.encode(
-            query,
-            normalize_embeddings=True
-        )
-
-        results = self.collection.query(
-
-            query_embeddings=[
-                query_embedding.tolist()
-            ],
-
-            n_results=min(
-                RETRIEVAL_LIMIT,
-                self.collection.count()
-            )
-        )
-
-        verse_ids = results["ids"][0]
-
-        distances = results["distances"][0]
-
-        ranks = {
-
-            verse_id: rank
-
-            for rank, verse_id in enumerate(
-                verse_ids,
-                start=1
-            )
-        }
-
-        distance_map = dict(
-            zip(verse_ids, distances)
-        )
-
-        return ranks, distance_map
 
     # --------------------------------
     # 10. KEYWORD SEARCH
@@ -449,8 +381,9 @@ class QuranRetriever:
 
         return keyword_ranks
 
+
     # --------------------------------
-    # 11. HYBRID RETRIEVAL
+    # 11. BM25-BASED RETRIEVAL
     # --------------------------------
 
     def retrieve(self, question):
@@ -475,13 +408,9 @@ class QuranRetriever:
             len(query_variants)
         )
 
-        rrf_scores = defaultdict(float)
-
-        best_semantic_ranks = {}
+        retrieval_scores = defaultdict(float)
 
         best_keyword_ranks = {}
-
-        best_distances = {}
 
         matched_queries = defaultdict(list)
 
@@ -497,50 +426,17 @@ class QuranRetriever:
                 f"Searching query {query_index + 1}: {query}"
             )
 
-            # Original question receives higher weight.
+            # Give the original question higher weight.
             weight = (
                 2.0 if query_index == 0 else 1.0
             )
 
-            # Semantic search.
-            semantic_ranks, distance_map = (
-                self.semantic_search(query)
-            )
-
-            # Keyword search.
             keyword_ranks = self.keyword_search(query)
 
-            # Combine semantic rankings.
-            for verse_id, rank in semantic_ranks.items():
-
-                rrf_scores[verse_id] += (
-                    weight / (RRF_K + rank)
-                )
-
-                if (
-                    verse_id not in best_semantic_ranks
-                    or rank < best_semantic_ranks[verse_id]
-                ):
-
-                    best_semantic_ranks[verse_id] = rank
-
-                distance = distance_map[verse_id]
-
-                if (
-                    verse_id not in best_distances
-                    or distance < best_distances[verse_id]
-                ):
-
-                    best_distances[verse_id] = distance
-
-                if query not in matched_queries[verse_id]:
-
-                    matched_queries[verse_id].append(query)
-
-            # Combine keyword rankings.
+            # Combine rankings using Reciprocal Rank Fusion.
             for verse_id, rank in keyword_ranks.items():
 
-                rrf_scores[verse_id] += (
+                retrieval_scores[verse_id] += (
                     weight / (RRF_K + rank)
                 )
 
@@ -554,6 +450,7 @@ class QuranRetriever:
                 if query not in matched_queries[verse_id]:
 
                     matched_queries[verse_id].append(query)
+
 
         # --------------------------------
         # 12. EVIDENCE-AWARE RANKING
@@ -581,14 +478,15 @@ class QuranRetriever:
 
                     evidence_matches[verse_id] = matches
 
-                    # Include evidence matches even if they
-                    # were outside the initial retrieval lists.
-                    rrf_scores[verse_id] += EVIDENCE_BOOST
+                    # Include direct evidence matches even if
+                    # BM25 did not retrieve them initially.
+                    retrieval_scores[verse_id] += EVIDENCE_BOOST
 
             print(
                 "Verses with direct lexical evidence:",
                 len(evidence_matches)
             )
+
 
         # --------------------------------
         # 13. FINAL RANKING
@@ -596,7 +494,7 @@ class QuranRetriever:
 
         ranked_verses = sorted(
 
-            rrf_scores.items(),
+            retrieval_scores.items(),
 
             key=lambda item: item[1],
 
@@ -645,17 +543,14 @@ class QuranRetriever:
                     record["arabic_source"]["provider"]
                 ),
 
-                "semantic_rank": (
-                    best_semantic_ranks.get(verse_id)
-                ),
+                # Semantic search is disabled in this version.
+                "semantic_rank": None,
 
                 "keyword_rank": (
                     best_keyword_ranks.get(verse_id)
                 ),
 
-                "semantic_distance": (
-                    best_distances.get(verse_id)
-                ),
+                "semantic_distance": None,
 
                 "rrf_score": round(score, 6),
 
@@ -674,7 +569,7 @@ class QuranRetriever:
             })
 
         print(
-            "Hybrid retrieval completed.",
+            "BM25 retrieval completed.",
             "Final verses:",
             len(final_results)
         )

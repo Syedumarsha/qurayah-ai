@@ -1,4 +1,5 @@
 
+import os
 import traceback
 from contextlib import asynccontextmanager
 
@@ -28,7 +29,7 @@ async def lifespan(app: FastAPI):
     global retriever, answer_generator
 
     print("\n====================================")
-    print("Initializing Hikmah AI...")
+    print("Initializing QurAyah AI...")
     print("====================================")
 
     try:
@@ -45,7 +46,7 @@ async def lifespan(app: FastAPI):
 
         print("Gemini initialized successfully!")
 
-        print("\nHikmah AI is ready!")
+        print("\nQurAyah AI is ready!")
         print("====================================\n")
 
         yield
@@ -62,7 +63,7 @@ async def lifespan(app: FastAPI):
 
     finally:
 
-        print("\nHikmah AI shutting down...")
+        print("\nQurAyah AI shutting down...")
 
 
 # --------------------------------
@@ -71,9 +72,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
 
-    title="Hikmah AI",
+    title="QurAyah AI",
 
-    description="Quran-based AI Assistant using RAG and Gemini",
+    description=(
+        "Quran-based AI assistant using BM25 retrieval "
+        "and Gemini for evidence-grounded responses."
+    ),
 
     version="1.0.0",
 
@@ -85,13 +89,22 @@ app = FastAPI(
 # 4. CORS CONFIGURATION
 # --------------------------------
 
+frontend_origins = os.getenv(
+    "FRONTEND_ORIGINS",
+    "http://localhost:3000"
+)
+
+allowed_origins = [
+    origin.strip()
+    for origin in frontend_origins.split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
 
     CORSMiddleware,
 
-    allow_origins=[
-        "http://localhost:3000"
-    ],
+    allow_origins=allowed_origins,
 
     allow_credentials=True,
 
@@ -122,7 +135,7 @@ def home():
 
     return {
 
-        "message": "Welcome to Hikmah AI!",
+        "message": "Welcome to QurAyah AI!",
 
         "status": "Backend is running successfully"
 
@@ -160,7 +173,19 @@ def ask_question(request: QuestionRequest):
 
             status_code=503,
 
-            detail="Hikmah AI is not ready."
+            detail="QurAyah AI is not ready."
+
+        )
+
+    question = request.question.strip()
+
+    if not question:
+
+        raise HTTPException(
+
+            status_code=400,
+
+            detail="Please enter a valid question."
 
         )
 
@@ -168,7 +193,7 @@ def ask_question(request: QuestionRequest):
 
         print("\n========== NEW QUESTION ==========")
 
-        print("Question:", request.question)
+        print("Question:", question)
 
         # --------------------------------
         # STEP 1: QURAN RETRIEVAL
@@ -176,9 +201,7 @@ def ask_question(request: QuestionRequest):
 
         print("\nSTEP 1: Retrieving Quranic verses...")
 
-        results = retriever.retrieve(
-            request.question
-        )
+        results = retriever.retrieve(question)
 
         print(
             "STEP 1 COMPLETE:",
@@ -194,7 +217,7 @@ def ask_question(request: QuestionRequest):
 
         answer = answer_generator.generate_answer(
 
-            request.question,
+            question,
 
             results
 
@@ -210,12 +233,13 @@ def ask_question(request: QuestionRequest):
 
         return {
 
-            "question": request.question,
+            "question": question,
 
             "answer": answer,
 
             "retrieval_method": (
-                "Hybrid Search (BM25 + Semantic Search + RRF)"
+                "BM25 Keyword Search + Query Expansion "
+                "+ Evidence-Aware Ranking"
             ),
 
             "generation_model": answer_generator.model,
@@ -226,19 +250,11 @@ def ask_question(request: QuestionRequest):
 
         }
 
-    # --------------------------------
-    # VALIDATION ERROR
-    # --------------------------------
-
     except ValueError as error:
 
         print("\n========== VALIDATION ERROR ==========")
 
         print("Error:", repr(error))
-
-        traceback.print_exc()
-
-        print("======================================\n")
 
         raise HTTPException(
 
@@ -248,15 +264,9 @@ def ask_question(request: QuestionRequest):
 
         )
 
-    # --------------------------------
-    # DEBUGGING: INTERNAL ERROR
-    # --------------------------------
+    except Exception:
 
-    except Exception as error:
-
-        print("\n========== HIKMAH AI ERROR ==========")
-
-        print("Error:", repr(error))
+        print("\n========== QURAYAH AI ERROR ==========")
 
         traceback.print_exc()
 
@@ -266,6 +276,6 @@ def ask_question(request: QuestionRequest):
 
             status_code=500,
 
-            detail=f"DEBUG ERROR: {repr(error)}"
+            detail="An internal error occurred. Please try again later."
 
         )
