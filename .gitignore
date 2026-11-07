@@ -1,0 +1,27 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# ChromaDB
+backend/data/chroma_db/
+
+# Raw Quran source downloads
+backend/data/raw/
+
+# Node.js
+node_modules/
+.next/
+out/
+dist/
+
+# Build and environment files
+*.log
+.DS_Store
+Thumbs.db
