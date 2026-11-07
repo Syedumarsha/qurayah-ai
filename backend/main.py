@@ -1,93 +1,89 @@
 
 import os
 import traceback
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from quran_retriever import QuranRetriever
+from quran_retriever import (
+    QuranRetriever,
+    detect_reference,
+    detect_surah_only,
+    SURAH_NAMES
+)
+
 from answer_generator import GeminiAnswerGenerator
 
 
-# --------------------------------
+# ==========================================
 # 1. GLOBAL INSTANCES
-# --------------------------------
+# ==========================================
 
 retriever = None
 answer_generator = None
 
 
-# --------------------------------
+# ==========================================
 # 2. APPLICATION LIFECYCLE
-# --------------------------------
+# ==========================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
 
     global retriever, answer_generator
 
-    print("\n====================================")
-    print("Initializing QurAyah AI...")
-    print("====================================")
+    print("\nInitializing QurAyah AI...")
 
     try:
 
-        print("Loading Quran retriever...")
-
         retriever = QuranRetriever()
 
-        print("Quran retriever initialized successfully!")
-
-        print("Initializing Gemini...")
+        print("Quran retriever ready!")
 
         answer_generator = GeminiAnswerGenerator()
 
-        print("Gemini initialized successfully!")
+        print("Gemini ready!")
 
-        print("\nQurAyah AI is ready!")
-        print("====================================\n")
+        print("QurAyah AI initialized successfully.\n")
 
         yield
 
     except Exception:
 
-        print("\n========== INITIALIZATION ERROR ==========")
-
         traceback.print_exc()
-
-        print("==========================================\n")
 
         raise
 
     finally:
 
-        print("\nQurAyah AI shutting down...")
+        print("QurAyah AI shutting down...")
 
 
-# --------------------------------
+# ==========================================
 # 3. FASTAPI APPLICATION
-# --------------------------------
+# ==========================================
 
 app = FastAPI(
 
     title="QurAyah AI",
 
     description=(
-        "Quran-based AI assistant using BM25 retrieval "
-        "and Gemini for evidence-grounded responses."
+        "Quran-only AI assistant with intelligent "
+        "query understanding and evidence retrieval."
     ),
 
-    version="1.0.0",
+    version="3.0.0",
 
     lifespan=lifespan
 )
 
 
-# --------------------------------
-# 4. CORS CONFIGURATION
-# --------------------------------
+# ==========================================
+# 4. CORS
+# ==========================================
 
 frontend_origins = os.getenv(
     "FRONTEND_ORIGINS",
@@ -114,9 +110,9 @@ app.add_middleware(
 )
 
 
-# --------------------------------
+# ==========================================
 # 5. REQUEST MODEL
-# --------------------------------
+# ==========================================
 
 class QuestionRequest(BaseModel):
 
@@ -126,9 +122,9 @@ class QuestionRequest(BaseModel):
     )
 
 
-# --------------------------------
-# 6. HOME ENDPOINT
-# --------------------------------
+# ==========================================
+# 6. HOME
+# ==========================================
 
 @app.get("/")
 def home():
@@ -137,14 +133,16 @@ def home():
 
         "message": "Welcome to QurAyah AI!",
 
-        "status": "Backend is running successfully"
+        "status": "Backend is running successfully",
+
+        "version": "3.0.0"
 
     }
 
 
-# --------------------------------
-# 7. HEALTH ENDPOINT
-# --------------------------------
+# ==========================================
+# 7. HEALTH
+# ==========================================
 
 @app.get("/health")
 def health():
@@ -160,9 +158,9 @@ def health():
     }
 
 
-# --------------------------------
-# 8. ASK ENDPOINT
-# --------------------------------
+# ==========================================
+# 8. ASK QUESTION
+# ==========================================
 
 @app.post("/ask")
 def ask_question(request: QuestionRequest):
@@ -170,11 +168,8 @@ def ask_question(request: QuestionRequest):
     if retriever is None or answer_generator is None:
 
         raise HTTPException(
-
             status_code=503,
-
             detail="QurAyah AI is not ready."
-
         )
 
     question = request.question.strip()
@@ -182,11 +177,8 @@ def ask_question(request: QuestionRequest):
     if not question:
 
         raise HTTPException(
-
             status_code=400,
-
             detail="Please enter a valid question."
-
         )
 
     try:
@@ -195,41 +187,156 @@ def ask_question(request: QuestionRequest):
 
         print("Question:", question)
 
-        # --------------------------------
-        # STEP 1: QURAN RETRIEVAL
-        # --------------------------------
+        # ----------------------------------
+        # STEP 1: DETECT QUERY TYPE
+        # ----------------------------------
 
-        print("\nSTEP 1: Retrieving Quranic verses...")
+        reference = detect_reference(question)
 
-        results = retriever.retrieve(question)
+        surah_number = detect_surah_only(question)
+
+        if reference:
+
+            query_type = "exact_ayah"
+
+        elif surah_number:
+
+            query_type = "complete_surah"
+
+        else:
+
+            query_type = "general_question"
+
+        print("Query type:", query_type)
+
+        # ----------------------------------
+        # STEP 2: GEMINI QUERY UNDERSTANDING
+        # ----------------------------------
+
+        expanded_queries = []
+
+        if query_type == "general_question":
+
+            print("\nGemini query understanding started...")
+
+            expanded_queries = (
+                answer_generator.understand_query(question)
+            )
+
+            print(
+                "Expanded queries:",
+                len(expanded_queries)
+            )
+
+        # ----------------------------------
+        # STEP 3: QURAN RETRIEVAL
+        # ----------------------------------
+
+        print("\nRetrieving Quranic evidence...")
+
+        results = retriever.retrieve(
+            question,
+            expanded_queries=expanded_queries
+        )
 
         print(
-            "STEP 1 COMPLETE:",
-            len(results),
-            "verses retrieved."
+            "Retrieved Quranic records:",
+            len(results)
         )
 
-        # --------------------------------
-        # STEP 2: GEMINI GENERATION
-        # --------------------------------
+        if not results:
 
-        print("\nSTEP 2: Generating answer using Gemini...")
+            return {
 
-        answer = answer_generator.generate_answer(
+                "question": question,
 
-            question,
+                "answer": (
+                    "I could not find sufficient Quranic "
+                    "evidence to answer this question. "
+                    "Please try rephrasing your question."
+                ),
 
-            results
+                "retrieval_method": "BM25 + Gemini Query Understanding",
 
+                "query_type": query_type,
+
+                "generation_model": answer_generator.model,
+
+                "results": [],
+
+                "retrieved_count": 0,
+
+                "result_count": 0
+
+            }
+
+        # ----------------------------------
+        # STEP 4: EXACT AYAH
+        # ----------------------------------
+
+        if query_type == "exact_ayah":
+
+            answer = answer_generator.generate_answer(
+                question,
+                results
+            )
+
+            selected_results = (
+                answer_generator.selected_verses
+            )
+
+        # ----------------------------------
+        # STEP 5: COMPLETE SURAH
+        # ----------------------------------
+
+        elif query_type == "complete_surah":
+
+            surah_name = SURAH_NAMES[surah_number]
+
+            total_ayahs = len(results)
+
+            answer = (
+                f"## Surah {surah_name} "
+                f"({surah_number})\n\n"
+                f"This Surah contains {total_ayahs} Ayahs. "
+                f"The complete Arabic text and English "
+                f"translation are included in the Quranic "
+                f"references below.\n\n"
+                f"Arabic Quran text: Tanzil Uthmani. "
+                f"English translation: QuranEnc, "
+                f"Noor International Center."
+            )
+
+            # Preserve every Ayah in the Surah.
+            selected_results = results
+
+        # ----------------------------------
+        # STEP 6: GENERAL QUESTION
+        # ----------------------------------
+
+        else:
+
+            answer = answer_generator.generate_answer(
+                question,
+                results
+            )
+
+            selected_results = (
+                answer_generator.selected_verses
+            )
+
+        # ----------------------------------
+        # STEP 7: API RESPONSE
+        # ----------------------------------
+
+        print("\nAnswer generated successfully.")
+
+        print(
+            "Final references:",
+            len(selected_results)
         )
 
-        print("\nSTEP 2 COMPLETE: Gemini generated the answer.")
-
-        # --------------------------------
-        # STEP 3: RETURN RESPONSE
-        # --------------------------------
-
-        print("\nSTEP 3: Sending response to frontend.")
+        print("====================================\n")
 
         return {
 
@@ -238,44 +345,40 @@ def ask_question(request: QuestionRequest):
             "answer": answer,
 
             "retrieval_method": (
-                "BM25 Keyword Search + Query Expansion "
-                "+ Evidence-Aware Ranking"
+                "Direct Lookup + Gemini Query Understanding "
+                "+ BM25 + Reciprocal Rank Fusion"
             ),
+
+            "query_type": query_type,
 
             "generation_model": answer_generator.model,
 
-            "results": results,
+            "results": selected_results,
 
-            "result_count": len(results)
+            "retrieved_count": len(results),
+
+            "result_count": len(selected_results)
 
         }
 
     except ValueError as error:
 
-        print("\n========== VALIDATION ERROR ==========")
-
-        print("Error:", repr(error))
-
         raise HTTPException(
-
             status_code=400,
-
             detail=str(error)
-
         )
 
     except Exception:
 
-        print("\n========== QURAYAH AI ERROR ==========")
-
         traceback.print_exc()
-
-        print("====================================\n")
 
         raise HTTPException(
 
             status_code=500,
 
-            detail="An internal error occurred. Please try again later."
+            detail=(
+                "An internal error occurred. "
+                "Please try again later."
+            )
 
         )
